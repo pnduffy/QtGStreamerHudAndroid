@@ -1,0 +1,627 @@
+/*===================================================================
+APM_PLANNER Open Source Ground Control Station
+
+(c) 2014 APM_PLANNER PROJECT <http://www.diydrones.com>
+
+This file is part of the APM_PLANNER project
+
+    APM_PLANNER is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    APM_PLANNER is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with APM_PLANNER. If not, see <http://www.gnu.org/licenses/>.
+
+======================================================================*/
+
+/**
+ * @file
+ *   @brief LinkManager
+ *
+ *   @author Michael Carpenter <malcom2073@gmail.com>
+ *   @author QGROUNDCONTROL PROJECT - This code has GPLv3+ snippets from QGROUNDCONTROL, (c) 2009, 2010 QGROUNDCONTROL PROJECT <http://www.qgroundcontrol.org>
+ *
+ */
+
+
+#include "LinkManager1.h"
+#include "PxQuadMAV1.h"
+#include "SlugsMAV1.h"
+#include "ArduPilotMegaMAV1.h"
+#include "UASManager1.h"
+#include "UDPLink1.h"
+#include "TCPLink1.h"
+#include <QSettings>
+#include "UASObject.h"
+
+LinkManager::LinkManager(QObject *parent) :
+    QObject(parent)
+{
+    m_mavlinkLoggingEnabled = true;
+    m_mavlinkDecoder = new MAVLinkDecoder(this);
+    m_mavlinkProtocol = new MAVLinkProtocol();
+    m_mavlinkProtocol->setConnectionManager(this);
+    connect(m_mavlinkProtocol,SIGNAL(messageReceived(LinkInterface*,mavlink_message_t)),m_mavlinkDecoder,SLOT(receiveMessage(LinkInterface*,mavlink_message_t)));
+    connect(m_mavlinkProtocol,SIGNAL(protocolStatusMessage(QString,QString)),this,SLOT(protocolStatusMessageRec(QString,QString)));
+    loadSettings();
+    //Check to see if we have a single UDP connection, since they are the defaults
+
+    bool foundudp = false;
+    for (QMap<int,LinkInterface*>::const_iterator i= m_connectionMap.constBegin();i!=m_connectionMap.constEnd();i++)
+    {
+        if (i.value()->getLinkType() == LinkInterface::UDP_LINK)
+        {
+            foundudp = true;
+        }
+    }
+    if (!foundudp)
+    {
+        addUdpConnection(QHostAddress::Any,14550);
+    }
+}
+void LinkManager::stopLogging()
+{
+    if (!m_mavlinkLoggingEnabled)
+    {
+        return;
+    }
+    m_mavlinkProtocol->stopLogging();
+}
+
+LinkManager::~LinkManager()
+{
+    m_mavlinkProtocol->setConnectionManager(NULL);
+    delete m_mavlinkProtocol;
+    m_mavlinkProtocol = NULL;
+    saveSettings();
+}
+
+void LinkManager::loadSettings()
+{
+    QSettings settings;
+    settings.beginGroup("LINKMANAGER");
+    m_mavlinkLoggingEnabled = settings.value("LOGGING",true).toBool();
+    int linkssize = settings.beginReadArray("LINKS");
+    for (int i=0;i<linkssize;i++)
+    {
+        settings.setArrayIndex(i);
+        QString type = settings.value("type").toString();
+
+        if (type == "UDP_LINK")
+        {
+            int port = settings.value("port").toInt();
+            int linkid = addUdpConnection(QHostAddress::Any,port);
+            UDPLink *iface = qobject_cast<UDPLink*>(m_connectionMap.value(linkid));
+
+            int hostcount = settings.beginReadArray("HOSTS");
+            for (int j=0;j<hostcount;++j)
+            {
+                settings.setArrayIndex(j);
+                QString host = settings.value("host").toString();
+                int port = settings.value("port").toInt();
+                iface->addHost(tr("%1:%2").arg(host, port));
+            }
+            settings.endArray();
+        }
+        else if (type == "TCP_LINK")
+        {
+            QString host = settings.value("host").toString();
+            int port = settings.value("port").toInt();
+            bool asServer = settings.value("asServer").toBool();
+            addTcpConnection(QHostAddress(host),port,asServer);
+        }
+    }
+
+    int portsize = settings.beginReadArray("PORTBAUDPAIRS");
+    for (int i=0;i<portsize;i++)
+    {
+        settings.setArrayIndex(i);
+        m_portToBaudMap[settings.value("port").toString()] = settings.value("baud").toInt();
+    }
+    settings.endArray();
+    settings.endArray();
+}
+
+void LinkManager::saveSettings()
+{
+    QSettings settings;
+    settings.beginGroup("LINKMANAGER");
+    settings.setValue("LOGGING",m_mavlinkLoggingEnabled);
+    settings.beginWriteArray("LINKS");
+    int index = 0;
+    for (QMap<int,LinkInterface*>::const_iterator i= m_connectionMap.constBegin();i!=m_connectionMap.constEnd();i++)
+    {
+        settings.setArrayIndex(index++);
+        settings.setValue("linkid",i.value()->getId());
+        if (i.value()->getLinkType() == LinkInterface::UDP_LINK)
+        {
+            UDPLink *link = qobject_cast<UDPLink*>(i.value());
+            settings.setValue("type","UDP_LINK");
+            settings.beginWriteArray("HOSTS");
+            for (int j=0;j<link->getHosts().size();j++)
+            {
+                settings.setArrayIndex(j);
+                settings.setValue("host",link->getHosts().at(j).toString());
+                settings.setValue("port",link->getPorts().at(j));
+            }
+            settings.endArray();
+            settings.setValue("port",link->getPort());
+        }
+        else if (i.value()->getLinkType() == LinkInterface::TCP_LINK)
+        {
+            TCPLink *link = qobject_cast<TCPLink*>(i.value());
+            settings.setValue("type","TCP_LINK");
+            settings.setValue("host",link->getHostAddress().toString());
+            settings.setValue("port",link->getPort());
+            settings.setValue("asServer",link->isServer());
+        }
+    }
+    settings.endArray();
+    settings.beginWriteArray("PORTBAUDPAIRS");
+    index = 0;
+    for (QMap<QString,int>::const_iterator i=m_portToBaudMap.constBegin();i!=m_portToBaudMap.constEnd();i++)
+    {
+        settings.setArrayIndex(index++);
+        settings.setValue("port",i.key());
+        settings.setValue("baud",i.value());
+    }
+    settings.endArray();
+    settings.endGroup();
+    settings.sync();
+}
+void LinkManager::setLogSubDirectory(QString dir)
+{
+    if (!dir.startsWith("/"))
+    {
+        m_logSubDir = "/" + dir;
+    }
+    else
+    {
+        m_logSubDir = dir;
+    }
+    if (!m_logSubDir.endsWith("/"))
+    {
+        m_logSubDir += "/";
+    }
+    QDir logdir(QGC::MAVLinkLogDirectory());
+    if (!logdir.cd(m_logSubDir.mid(1)))
+    {
+        logdir.mkdir(m_logSubDir.mid(1));
+    }
+}
+void LinkManager::enableLogging(bool enabled)
+{
+
+    if (enabled)
+    {
+        m_mavlinkLoggingEnabled = enabled;
+        startLogging();
+    }
+    else
+    {
+        stopLogging();
+        m_mavlinkLoggingEnabled = enabled;
+    }
+}
+
+bool LinkManager::loggingEnabled()
+{
+    return m_mavlinkLoggingEnabled;
+}
+
+void LinkManager::startLogging()
+{
+    if (!m_mavlinkLoggingEnabled)
+    {
+        return;
+    }
+    QString logFileName = QGC::MAVLinkLogDirectory() + m_logSubDir + QGC::fileNameAsTime();
+    QLOG_DEBUG() << "LinkManger::startLogging()" << logFileName;
+    m_mavlinkProtocol->startLogging(logFileName);
+}
+
+LinkInterface::LinkType LinkManager::getLinkType(int linkid)
+{
+    if (!m_connectionMap.contains(linkid))
+    {
+        return LinkInterface::UNKNOWN_LINK;
+    }
+    return m_connectionMap.value(linkid)->getLinkType();
+}
+
+int LinkManager::addUdpConnection(QHostAddress addr,int port)
+{
+    UDPLink* udpLink = new UDPLink(addr,port);
+    connect(udpLink,SIGNAL(bytesReceived(LinkInterface*,QByteArray)),m_mavlinkProtocol,SLOT(receiveBytes(LinkInterface*,QByteArray)));
+    connect(udpLink,SIGNAL(connected(LinkInterface*)),this,SLOT(linkConnected(LinkInterface*)));
+    connect(udpLink,SIGNAL(disconnected(LinkInterface*)),this,SLOT(linkDisonnected(LinkInterface*)));
+    connect(udpLink,SIGNAL(error(LinkInterface*,QString)),this,SLOT(linkErrorRec(LinkInterface*,QString)));
+    m_connectionMap.insert(udpLink->getId(),udpLink);
+    emit newLink(udpLink->getId());
+    saveSettings();
+    udpLink->connect();
+    return udpLink->getId();
+
+}
+int LinkManager::addTcpConnection(QHostAddress addr,int port,bool asServer)
+{
+    TCPLink *tcplink = new TCPLink(addr,port,asServer);
+    connect(tcplink,SIGNAL(bytesReceived(LinkInterface*,QByteArray)),m_mavlinkProtocol,SLOT(receiveBytes(LinkInterface*,QByteArray)));
+    connect(tcplink,SIGNAL(connected(LinkInterface*)),this,SLOT(linkConnected(LinkInterface*)));
+    connect(tcplink,SIGNAL(disconnected(LinkInterface*)),this,SLOT(linkDisonnected(LinkInterface*)));
+    m_connectionMap.insert(tcplink->getId(),tcplink);
+    emit newLink(tcplink->getId());
+    saveSettings();
+    if (asServer)
+    {
+        tcplink->connect();
+    }
+    return tcplink->getId();
+}
+
+void LinkManager::addLink(LinkInterface *link)
+{
+    m_connectionMap.insert(link->getId(),link);
+}
+void LinkManager::removeLink(LinkInterface*)
+{
+   // This is called with a LINK_ID not an interface. needs mor rework
+    //This function is not yet supported, it will be once we support multiple MAVs
+}
+
+void LinkManager::removeLink(int linkId)
+{
+    if (m_connectionMap.contains(linkId))
+    {
+        if (m_connectionMap.value(linkId)->isConnected())
+        {
+            m_connectionMap.value(linkId)->disconnect();
+        }
+        delete m_connectionMap.value(linkId);
+        m_connectionMap.remove(linkId);
+        saveSettings();
+    }
+}
+
+bool LinkManager::connectLink(int index)
+{
+    if (m_connectionMap.contains(index))
+    {
+        return m_connectionMap.value(index)->connect();
+    }
+    return false;
+}
+void LinkManager::disconnectLink(int index)
+{
+    if (m_connectionMap.contains(index))
+    {
+        m_connectionMap.value(index)->disconnect();
+    }
+}
+void LinkManager::modifyTcpConnection(int index,QHostAddress addr,int port,bool asServer)
+{
+    if (!m_connectionMap.contains(index))
+    {
+        return;
+    }
+    TCPLink *iface = qobject_cast<TCPLink*>(m_connectionMap.value(index));
+    if (!iface)
+    {
+        return;
+    }
+    iface->setHostAddress(addr);
+    iface->setPort(port);
+    iface->setAsServer(asServer);
+    emit linkChanged(index);
+    saveSettings();
+}
+
+QString LinkManager::getLinkName(int linkid)
+{
+    if (!m_connectionMap.contains(linkid))
+    {
+        return "";
+    }
+    return m_connectionMap.value(linkid)->getName();
+}
+
+bool LinkManager::getLinkConnected(int linkid)
+{
+    if (!m_connectionMap.contains(linkid))
+    {
+        return "";
+    }
+    return m_connectionMap.value(linkid)->isConnected();
+}
+
+int LinkManager::getUdpLinkPort(int linkid)
+{
+    if (!m_connectionMap.contains(linkid))
+    {
+        return 0;
+    }
+    UDPLink *iface = qobject_cast<UDPLink*>(m_connectionMap.value(linkid));
+    if (!iface)
+    {
+        return 0;
+    }
+    return iface->getPort();
+}
+int LinkManager::getTcpLinkPort(int linkid)
+{
+    if (!m_connectionMap.contains(linkid))
+    {
+        return 0;
+    }
+    TCPLink *iface = qobject_cast<TCPLink*>(m_connectionMap.value(linkid));
+    if (!iface)
+    {
+        return 0;
+    }
+    return iface->getPort();
+}
+
+QHostAddress LinkManager::getTcpLinkHost(int linkid)
+{
+    if (!m_connectionMap.contains(linkid))
+    {
+        return QHostAddress::Null;
+    }
+    TCPLink *iface = qobject_cast<TCPLink*>(m_connectionMap.value(linkid));
+    if (!iface)
+    {
+        return QHostAddress::Null;
+    }
+    return iface->getHostAddress();
+}
+
+bool LinkManager::isTcpServer(int linkid)
+{
+    if (!m_connectionMap.contains(linkid))
+        return false;
+
+    TCPLink *iface = qobject_cast<TCPLink*>(m_connectionMap.value(linkid));
+    if (!iface)
+        return false;
+
+    return iface->isServer();
+}
+
+void LinkManager::setUdpLinkPort(int linkid, int port)
+{
+    if (!m_connectionMap.contains(linkid))
+    {
+        return;
+    }
+    UDPLink *iface = qobject_cast<UDPLink*>(m_connectionMap.value(linkid));
+    if (!iface)
+    {
+        return;
+    }
+    iface->setPort(port);
+    emit linkChanged(linkid);
+    saveSettings();
+}
+void LinkManager::addUdpHost(int linkid,QString hostname)
+{
+    if (!m_connectionMap.contains(linkid))
+    {
+        return;
+    }
+    UDPLink *iface = qobject_cast<UDPLink*>(m_connectionMap.value(linkid));
+    if (!iface)
+    {
+        return;
+    }
+    iface->addHost(hostname);
+    saveSettings();
+}
+
+void LinkManager::messageReceived(LinkInterface* ,mavlink_message_t )
+{
+}
+
+UASInterface* LinkManager::getUas(int id)
+{
+    if (m_uasMap.contains(id))
+    {
+        return m_uasMap.value(id);
+    }
+    return 0;
+}
+QList<int> LinkManager::getLinks()
+{
+    QList<int> links;
+    for (int i=0;i<m_connectionMap.keys().size();i++)
+    {
+        links.append(m_connectionMap.value(m_connectionMap.keys().at(i))->getId());
+    }
+    return links;
+}
+
+UASInterface* LinkManager::createUAS(MAVLinkProtocol* mavlink, LinkInterface* link, int sysid, mavlink_heartbeat_t* heartbeat, QObject* parent)
+{
+    QPointer<QObject> p;
+
+    if (parent != NULL)
+    {
+        p = parent;
+    }
+    else
+    {
+        p = mavlink;
+    }
+
+    UASInterface* uas;
+
+    switch (heartbeat->autopilot)
+    {
+    case MAV_AUTOPILOT_GENERIC:
+    {
+        UAS* mav = new UAS(0, sysid);
+        // Set the system type
+        mav->setSystemType((int)heartbeat->type);
+        // Connect this robot to the UAS object
+        connect(mavlink, SIGNAL(messageReceived(LinkInterface*, mavlink_message_t)), mav, SLOT(receiveMessage(LinkInterface*, mavlink_message_t)));
+#ifdef QGC_PROTOBUF_ENABLED
+        connect(mavlink, SIGNAL(extendedMessageReceived(LinkInterface*, std::tr1::shared_ptr<google::protobuf::Message>)), mav, SLOT(receiveExtendedMessage(LinkInterface*, std::tr1::shared_ptr<google::protobuf::Message>)));
+#endif
+        uas = mav;
+    }
+    break;
+    case MAV_AUTOPILOT_PIXHAWK:
+    {
+        PxQuadMAV* mav = new PxQuadMAV(0, sysid);
+        // Set the system type
+        mav->setSystemType((int)heartbeat->type);
+        // Connect this robot to the UAS object
+        // it is IMPORTANT here to use the right object type,
+        // else the slot of the parent object is called (and thus the special
+        // packets never reach their goal)
+        connect(mavlink, SIGNAL(messageReceived(LinkInterface*, mavlink_message_t)), mav, SLOT(receiveMessage(LinkInterface*, mavlink_message_t)));
+#ifdef QGC_PROTOBUF_ENABLED
+        connect(mavlink, SIGNAL(extendedMessageReceived(LinkInterface*, std::tr1::shared_ptr<google::protobuf::Message>)), mav, SLOT(receiveExtendedMessage(LinkInterface*, std::tr1::shared_ptr<google::protobuf::Message>)));
+#endif
+        uas = mav;
+    }
+    break;
+    case MAV_AUTOPILOT_SLUGS:
+    {
+        SlugsMAV* mav = new SlugsMAV(0, sysid);
+        // Set the system type
+        mav->setSystemType((int)heartbeat->type);
+        // Connect this robot to the UAS object
+        // it is IMPORTANT here to use the right object type,
+        // else the slot of the parent object is called (and thus the special
+        // packets never reach their goal)
+        connect(mavlink, SIGNAL(messageReceived(LinkInterface*, mavlink_message_t)), mav, SLOT(receiveMessage(LinkInterface*, mavlink_message_t)));
+        uas = mav;
+    }
+    break;
+    case MAV_AUTOPILOT_ARDUPILOTMEGA:
+    {
+        ArduPilotMegaMAV* mav = new ArduPilotMegaMAV(0, sysid);
+        UASObject *obj = new UASObject();
+        connect(mavlink,SIGNAL(messageReceived(LinkInterface*,mavlink_message_t)),obj,SLOT(messageReceived(LinkInterface*,mavlink_message_t)));
+        m_uasObjectMap[sysid] = obj;
+
+        // Set the system type
+        mav->setSystemType((int)heartbeat->type);
+        // Connect this robot to the UAS object
+        // it is IMPORTANT here to use the right object type,
+        // else the slot of the parent object is called (and thus the special
+        // packets never reach their goal)
+        connect(mavlink, SIGNAL(messageReceived(LinkInterface*, mavlink_message_t)), mav, SLOT(receiveMessage(LinkInterface*, mavlink_message_t)));
+        uas = mav;
+    }
+    break;
+#ifdef QGC_USE_SENSESOAR_MESSAGES
+    case MAV_AUTOPILOT_SENSESOAR:
+        {
+            senseSoarMAV* mav = new senseSoarMAV(0,sysid);
+            mav->setSystemType((int)heartbeat->type);
+            connect(mavlink, SIGNAL(messageReceived(LinkInterface*, mavlink_message_t)), mav, SLOT(receiveMessage(LinkInterface*, mavlink_message_t)));
+            uas = mav;
+            break;
+        }
+#endif
+    default:
+    {
+        UAS* mav = new UAS(0, sysid);
+        mav->setSystemType((int)heartbeat->type);
+        // Connect this robot to the UAS object
+        // it is IMPORTANT here to use the right object type,
+        // else the slot of the parent object is called (and thus the special
+        // packets never reach their goal)
+        connect(mavlink, SIGNAL(messageReceived(LinkInterface*, mavlink_message_t)), mav, SLOT(receiveMessage(LinkInterface*, mavlink_message_t)));
+        uas = mav;
+    }
+    break;
+    }
+
+    m_uasMap.insert(sysid,uas);
+
+    // Set the autopilot type
+    uas->setAutopilotType((int)heartbeat->autopilot);
+
+    // Make UAS aware that this link can be used to communicate with the actual robot
+    uas->addLink(link);
+
+    // Now add UAS to "official" list, which makes the whole application aware of it
+    UASManager::instance()->addUAS(uas);
+
+    return uas;
+
+}
+UASObject *LinkManager::getUasObject(int uasid)
+{
+    if (m_uasObjectMap.contains(uasid))
+    {
+        return m_uasObjectMap.value(uasid);
+    }
+    return 0;
+}
+
+void LinkManager::protocolStatusMessageRec(QString title,QString text)
+{
+    emit protocolStatusMessage(title,text);
+    QLOG_DEBUG() << "Protocol Status Message:" << title << text;
+}
+void LinkManager::linkConnected(LinkInterface* link)
+{
+    emit linkChanged(link->getId());
+}
+
+void LinkManager::linkDisonnected(LinkInterface* link)
+{
+    emit linkChanged(link->getId());
+}
+void LinkManager::linkErrorRec(LinkInterface *link,QString errorstring)
+{
+    emit linkError(link->getId(),errorstring);
+}
+void LinkManager::linkTimeoutTriggered(LinkInterface *)
+{
+    //Link has had a timeout
+    //Disabled until it is fixed and more more robust - MLC
+    //emit linkError(link->getId(),"Connected to link, but unable to receive any mavlink packets, (link is silent). Disconnecting");
+    //link->disconnect();
+}
+void LinkManager::disableTimeouts(int index)
+{
+    if (!m_connectionMap.contains(index))
+    {
+        return;
+    }
+    m_connectionMap.value(index)->disableTimeouts();
+}
+
+void LinkManager::enableTimeouts(int index)
+{
+    if (!m_connectionMap.contains(index))
+    {
+        return;
+    }
+    m_connectionMap.value(index)->enableTimeouts();
+}
+void LinkManager::disableAllTimeouts()
+{
+    for (QMap<int,LinkInterface*>::const_iterator i = m_connectionMap.constBegin(); i != m_connectionMap.constEnd();i++)
+    {
+        i.value()->disableTimeouts();
+    }
+}
+
+void LinkManager::enableAllTimeouts()
+{
+    for (QMap<int,LinkInterface*>::const_iterator i = m_connectionMap.constBegin(); i != m_connectionMap.constEnd();i++)
+    {
+        i.value()->disableTimeouts();
+    }
+}

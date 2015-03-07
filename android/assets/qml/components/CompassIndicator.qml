@@ -20,6 +20,7 @@ import QtQuick.Window 2.2
 Rectangle {
     id: root
     property real heading: 0
+    property real homeHeading: 0
     property real zoom: 1
     property real mm: Screen.pixelDensity
 
@@ -40,6 +41,15 @@ Rectangle {
         sourceSize.height: 30*zoom
         sourceSize.width: 30*zoom
     }
+
+    Image { // homeheading
+            id: homeHeadingImage
+            source: "../resources/components/rollPitchIndicator/homeheading.svg"
+            smooth: true
+            rotation: homeHeading
+            sourceSize.height: 30*zoom
+            sourceSize.width: 30*zoom
+        }
 
     Image {
         id: compassIndicator

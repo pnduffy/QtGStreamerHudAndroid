@@ -327,7 +327,8 @@ DISTFILES += \
     android/assets/resources/appicon48.png \
     android/assets/resources/appicon72.png \
     android/assets/resources/appicon96.png \
-    android/assets/resources/help.html
+    android/assets/resources/help.html \
+    android/assets/qml/resources/components/rollPitchIndicator/homeheading.svg
 
 QTPLUGIN += qsvg
 

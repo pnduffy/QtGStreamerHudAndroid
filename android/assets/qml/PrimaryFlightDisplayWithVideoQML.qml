@@ -62,6 +62,15 @@ Rectangle {
         compassIndicator.heading = Qt.binding(function() {
             return (relpositionoverview.yaw < 0) ? relpositionoverview.yaw + 360 : relpositionoverview.yaw ;
         })
+
+        compassIndicator.homeHeading = Qt.binding(function()
+        {
+            var homeHeading = abspositionoverview.homeHeading - relpositionoverview.yaw;
+            if (homeHeading > 360) homeHeading = homeHeading - 360;
+            if (homeHeading < 0) homeHeading = homeHeading + 360;
+            return homeHeading;
+        })
+
         speedIndicator.airspeed = Qt.binding(function() { return relpositionoverview.airspeed } )
         altIndicator.alt = Qt.binding(function() { return abspositionoverview.relative_alt } )
 

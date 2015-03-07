@@ -5,7 +5,6 @@
 #include "mavlink.h"
 #include "LinkInterface.h"
 
-
 class AbsPositionOverview : public QObject
 {
     Q_OBJECT
@@ -14,6 +13,9 @@ public:
     Q_PROPERTY(int lat READ getLat WRITE setLat NOTIFY latChanged)
     Q_PROPERTY(int lon READ getLon WRITE setLon NOTIFY lonChanged)
     Q_PROPERTY(int alt READ getAlt WRITE setAlt NOTIFY altChanged)
+    Q_PROPERTY(int latHome READ getLatHome WRITE setLatHome NOTIFY latChanged)
+    Q_PROPERTY(int lonHome READ getLonHome WRITE setLonHome NOTIFY lonChanged)
+    Q_PROPERTY(int altHome READ getAltHome WRITE setAltHome NOTIFY altChanged)
     Q_PROPERTY(unsigned int eph READ getEph WRITE setEph NOTIFY ephChanged)
     Q_PROPERTY(unsigned int epv READ getEpv WRITE setEpv NOTIFY epvChanged)
     Q_PROPERTY(unsigned int vel READ getVel WRITE setVel NOTIFY velChanged)
@@ -27,12 +29,15 @@ public:
     Q_PROPERTY(int vy READ getVy WRITE setVy NOTIFY vyChanged)
     Q_PROPERTY(int vz READ getVz WRITE setVz NOTIFY vzChanged)
     Q_PROPERTY(unsigned int hdg READ getHdg WRITE setHdg NOTIFY hdgChanged)
-
+    Q_PROPERTY(double homeHeading READ getHomeHeading WRITE setHomeHeading NOTIFY homeHeadingChanged)
 
     quint64 getTimeUsec() { return m_timeUsec; }
     int getLat() { return m_lat; }
     int getLon() { return m_lon; }
     int getAlt() { return m_alt; }
+    int getLatHome() { return m_latHome; }
+    int getLonHome() { return m_lonHome; }
+    int getAltHome() { return m_altHome; }
     unsigned int getEph() { return m_eph; }
     unsigned int getEpv() { return m_epv; }
     unsigned int getVel() { return m_vel; }
@@ -43,6 +48,9 @@ public:
     void setLat(int lat) { if (m_lat!=lat){m_lat = lat; emit latChanged(lat);}}
     void setLon(int lon) { if (m_lon!=lon){m_lon = lon; emit lonChanged(lon);}}
     void setAlt(int alt) { if (m_alt!=alt){m_alt = alt; emit altChanged(alt);}}
+    void setLatHome(int lat) { if (m_latHome!=lat){m_latHome = lat; emit latHomeChanged(lat);}}
+    void setLonHome(int lon) { if (m_lonHome!=lon){m_lonHome = lon; emit lonHomeChanged(lon);}}
+    void setAltHome(int alt) { if (m_altHome!=alt){m_altHome = alt; emit altHomeChanged(alt);}}
     void setEph(unsigned int eph) { if (m_eph!=eph){m_eph = eph; emit ephChanged(eph);}}
     void setEpv(unsigned int epv) { if (m_epv!=epv){m_epv = epv; emit epvChanged(epv);}}
     void setVel(unsigned int vel) { if (m_vel!=vel){m_vel = vel; emit velChanged(vel);}}
@@ -56,18 +64,23 @@ public:
     int getVy() { return m_vy; }
     int getVz() { return m_vz; }
     unsigned int getHdg() { return m_hdg; }
+    double getHomeHeading() { return m_homeHeading; }
     void setTimeBootMs(unsigned int timeBootMs) { if (m_timeBootMs!=timeBootMs){m_timeBootMs = timeBootMs; emit timeBootMsChanged(timeBootMs);}}
     void setRelativeAlt(int relativeAlt) { if (m_relativeAlt!=relativeAlt){m_relativeAlt = relativeAlt; emit relativeAltChanged(relativeAlt);}}
     void setVx(int vx) { if (m_vx!=vx){m_vx = vx; emit vxChanged(vx);}}
     void setVy(int vy) { if (m_vy!=vy){m_vy = vy; emit vyChanged(vy);}}
     void setVz(int vz) { if (m_vz!=vz){m_vz = vz; emit vzChanged(vz);}}
     void setHdg(unsigned int hdg) { if (m_hdg!=hdg){m_hdg = hdg; emit hdgChanged(hdg);}}
+    void setHomeHeading(double deg) { if (m_homeHeading != deg) {m_homeHeading = deg; emit homeHeadingChanged(deg);}}
 
 private:
     quint64 m_timeUsec;
     int m_lat;
     int m_lon;
     int m_alt;
+    int m_latHome;
+    int m_lonHome;
+    int m_altHome;
     unsigned int m_eph;
     unsigned int m_epv;
     unsigned int m_vel;
@@ -81,12 +94,16 @@ private:
     int m_vy;
     int m_vz;
     unsigned int m_hdg;
+    double m_homeHeading;
 
 signals:
     void timeUsecChanged(quint64);
     void latChanged(int);
     void lonChanged(int);
     void altChanged(int);
+    void latHomeChanged(int);
+    void lonHomeChanged(int);
+    void altHomeChanged(int);
     void ephChanged(unsigned int);
     void epvChanged(unsigned int);
     void velChanged(unsigned int);
@@ -100,6 +117,7 @@ signals:
     void vyChanged(int);
     void vzChanged(int);
     void hdgChanged(unsigned int);
+    void homeHeadingChanged(double);
 
 public:
     explicit AbsPositionOverview(QObject *parent = 0);
@@ -111,5 +129,6 @@ private:
 public slots:
     void messageReceived(LinkInterface* link,mavlink_message_t message);
 };
+
 
 #endif // ABSPOSITIONOVERVIEW_H
